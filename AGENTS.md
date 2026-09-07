@@ -1,12 +1,12 @@
 # AGENTS.md — Engineering Standards & Agent Guide
 
-This repository contains **commerce-api** (Order & Commerce Management System). This guide defines core standards and operational workflows for all AI coding agents and engineers.
+This repository contains **bad-commerce-api** (Order & Commerce Management System). This guide defines core standards and operational workflows for all AI coding agents and engineers.
 
 ---
 
 ## 1. Project Overview
 
-`commerce-api` is a Spring Boot monolithic backend managing core e-commerce capabilities: Customers, Catalog, Inventory, Orders, Payments, and Notifications.
+`bad-commerce-api` is a Spring Boot monolithic backend managing core e-commerce capabilities: Customers, Catalog, Inventory, Orders, Payments, and Notifications.
 
 The codebase is undergoing refactoring from legacy technical layers (`controller/`, `service/`, `repository/`) into an enterprise modular architecture partitioned by business capability.
 
@@ -28,7 +28,7 @@ The codebase is undergoing refactoring from legacy technical layers (`controller
 All business logic is organized strictly by business capability following the **3-root module rule**:
 
 ```text
-com.example.commerce
+com.example.badcommerce
 ├── <capability>/            # e.g. customer, catalog, inventory, order, payment, notification
 │   ├── api/                 # Published contracts: interfaces & records other modules may import
 │   ├── web/                 # HTTP adapters: controllers, request/response records, mappers
@@ -76,16 +76,33 @@ docker compose down
 
 ---
 
-## 6. Architecture Rules
+## 6. Architecture Rules & Decision Frameworks
 
-- **Module Isolation**: Package by business capability with exactly 3 package roots (`api`, `web`, `internal`). Modules communicate exclusively via published `*.api` contracts (N1, N2).
-- **Type Separation**: Persistence types and HTTP types never mix. `@Entity` never leaves `internal` (N3). Web vocabulary (`HttpStatus`, `ResponseEntity`) stops at `web` (N4).
-- **Kernel Admission**: `shared/` is reserved for stable, non-business code used by 2+ modules (N6).
-- **Zero Cycles**: No cyclic dependencies between modules (ArchUnit) or beans.
-- **Document Decisions**: Moving files between modules or creating a module requires an ADR in `docs/decisions/` (N7, 10.4).
+### 6.1 Core Structural Invariants
+- **Module Isolation (N1, N2)**: Package by business capability with exactly 3 package roots (`api`, `web`, `internal`). Modules communicate exclusively via published `*.api` contracts.
+- **Type Separation (N3, N4)**: Persistence types and HTTP types never mix. `@Entity` never leaves `internal`. Web vocabulary (`HttpStatus`, `ResponseEntity`) stops at `web`.
+- **Kernel Admission (N6)**: `shared/` is reserved for stable, non-business code used by 2+ modules right now.
+- **Zero Cycles (1.5)**: No cyclic dependencies between modules (ArchUnit) or beans.
 
-> 📖 **Deep-Dive Skill**: For module design, the 4-rung boundary ladder, refactoring matrices, and ADR templates, activate [`.agents/skills/architecture/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/architecture/SKILL.md).
-> 📖 **Deep-Dive Skill**: For module design, the 4-rung boundary ladder, refactoring matrices, and ADR templates, activate [`.agents/skills/architecture/SKILL.md`](.agents/skills/architecture/SKILL.md).
+### 6.2 The 4-Rung Boundary Ladder (Rule 10.1)
+When module ownership of a feature is disputed:
+1. *Whose data changes when this runs?* If one module writes -> it lives there.
+2. *Delete candidate modules in your head.* Which survivor still needs this feature? -> It belongs to that survivor.
+3. *Whose language does the feature speak?* (e.g. "Recent searches" is search vocabulary -> belongs to search).
+4. *Assign to the module owning the decision, not the data* -> Record the decision in `docs/decisions/`. Never default to `shared/`.
+
+### 6.3 7-Step God-Class Teardown (Rule 10.3)
+When decomposing oversized legacy files (e.g., `CommerceService`):
+1. Freeze behavior with characterization tests.
+2. Map public methods by capability.
+3. Group methods by shared fields/tables.
+4. Extract the quietest capability first.
+5. Move code and delegate from old class.
+6. Deploy small PR per extraction.
+7. Delete the empty delegator shell.
+
+### 6.4 Mandatory Architecture Decision Records (Rule 10.4, N7)
+Any PR adding a module or moving a file across modules must add an ADR under `docs/decisions/NNNN-<title>.md` documenting: *Context*, *Decision*, *Why*, *Consequences*, and *What We Rejected*.
 
 ---
 
@@ -95,34 +112,34 @@ docker compose down
 - **Negative Authorization**: Mandatory test verifying Customer A cannot access Customer B's resources.
 - **Outcome Testing**: Assert on returned values and state changes, not collaborator implementation details (`verify()`).
 - **ArchUnit Enforcement**: Structural boundaries (N2, N3, N4, 1.5, 8.3) are automated build failures in `ArchitectureTest.java`.
-
-> 📖 **Deep-Dive Skill**: For test patterns, mock setups, and the complete ArchUnit suite, activate [`.agents/skills/testing/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/testing/SKILL.md).
-> 📖 **Deep-Dive Skill**: For test patterns, mock setups, and the complete ArchUnit suite, activate [`.agents/skills/testing/SKILL.md`](.agents/skills/testing/SKILL.md).
+- **Ditch the 85% Blanket JaCoCo Target**: Do not write low-value tests for Lombok boilerplate, simple getters/setters, or trivial CRUD glue code.
+- **Focus on the "Critical Few"**:
+  1. **Pure Domain Logic Unit Tests**: Pricing, stock, calculations, and invariants (<10ms, pure JUnit 5 without Spring context).
+  2. **Negative Authorization Test**: Mandatory test per protected endpoint verifying Customer A cannot access Customer B's resources (Rule 6.2).
+  3. **ArchUnit Structural Verification**: Build-breaking test (`ArchitectureTest.java`) guaranteeing architectural boundaries across the entire project in 500ms.
+- **Layer-Appropriate Testing**: Pure JUnit 5 + Mockito for domain services (<10ms); `@WebMvcTest` with `@Import(ApiExceptionHandler.class)` for controllers; Testcontainers PostgreSQL for repositories (never embedded H2).
+- **Outcome Testing (9.3)**: Assert on returned values and state changes, not collaborator implementation details (`verify()`).
 
 ---
 
 ## 8. Security Rules
 
-- **Deny by Default**: Every endpoint is secured by default; public endpoints are explicitly permit-listed (N15).
-- **Context-Derived Identity**: The actor identity comes exclusively from `@AuthenticationPrincipal`, never from request bodies or parameters (N14). Queries enforce ownership; missing/unowned records return `404`.
-- **Anti-Mass-Assignment**: Never bind request bodies to `@Entity`. Use strict request records as allowlists (N3).
+- **Deny by Default (N15)**: Every endpoint is secured by default; public endpoints are explicitly permit-listed.
+- **Context-Derived Identity (N14)**: The actor identity comes exclusively from `@AuthenticationPrincipal`, never request payloads. Queries enforce ownership; missing/unowned records return `404`.
+- **Anti-Mass-Assignment (N3)**: Never bind request bodies to `@Entity`. Use strict request records as allowlists.
 - **Injection Defense**: Parameterize all queries; allowlist dynamic sort columns.
 - **Hardening & Limits**: Actuator exposes only `health` and `info`. Disable stack traces in responses. Disable Jackson polymorphic typing and enforce payload ceilings (`@Size`).
 
-> 📖 **Deep-Dive Skill**: For security filter configs, authorization flows, and parser limits, activate [`.agents/skills/security/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/security/SKILL.md).
 > 📖 **Deep-Dive Skill**: For security filter configs, authorization flows, and parser limits, activate [`.agents/skills/security/SKILL.md`](.agents/skills/security/SKILL.md).
 
 ---
 
 ## 9. Database Rules
 
-- **Transaction Boundaries**: **Zero remote I/O inside `@Transactional`** (N8). Transactions start at the service layer, never in controllers. Never call proxied methods on `this`.
+- **Transaction Boundaries (N8)**: **Zero remote I/O inside `@Transactional`** (no HTTP, message brokers, SMTP, or filesystem writes). Transactions start at the service layer. Never call proxied methods on `this`.
 - **OSIV Disabled**: `spring.jpa.open-in-view=false`. Resolve N+1 queries using two-step fetching (`Slice` of IDs + `JOIN FETCH`).
-- **Versioned Migrations**: All schema changes ship as forward-only Flyway migrations; `spring.jpa.hibernate.ddl-auto=validate` everywhere (N11).
+- **Versioned Migrations (N11)**: All schema changes ship as forward-only Flyway migrations; `spring.jpa.hibernate.ddl-auto=validate` everywhere.
 - **Concurrency & Indexing**: Use `@Version` for optimistic locking. New queries must ship with corresponding Flyway indexes.
-
-> 📖 **Deep-Dive Skills**: For transaction patterns, outbox design, and the Golden Checkout Path, activate [`.agents/skills/development/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/development/SKILL.md) and [`.agents/skills/resilience/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/resilience/SKILL.md).
-> 📖 **Deep-Dive Skills**: For transaction patterns, outbox design, and the Golden Checkout Path, activate [`.agents/skills/development/SKILL.md`](.agents/skills/development/SKILL.md) and [`.agents/skills/resilience/SKILL.md`](.agents/skills/resilience/SKILL.md).
 
 ---
 
@@ -130,7 +147,7 @@ docker compose down
 
 When implementing features or refactoring:
 1. **Identify Capability**: Determine the owning capability folder or evaluate the 4-rung boundary ladder (Rule 10.1).
-2. **Activate Specialized Skill**: Consult the relevant `.agents/skills/<skill>/SKILL.md` for in-depth runbooks, code examples, and edge-case handling.
+2. **Activate Specialized Skill**: Consult the relevant `.agents/skills/<skill>/SKILL.md` (`development`, `security`, `github-standards`).
 3. **Enforce 3-Root Isolation**: Put public contracts in `api`, endpoints in `web`, logic and `@Entity` in `internal`.
 4. **Draft ADR**: If introducing a module or moving files across modules, write an ADR in `docs/decisions/` (Rule 10.4).
 5. **Write Layered Tests**: Write pure unit tests for domain logic, `@WebMvcTest` with negative auth for controllers, and verify `ArchitectureTest`.
@@ -159,13 +176,7 @@ A task is complete only when:
 
 ## 12. Important References
 
-- **Architecture Skill**: [`.agents/skills/architecture/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/architecture/SKILL.md)
-- **Development Skill**: [`.agents/skills/development/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/development/SKILL.md)
-- **Security Skill**: [`.agents/skills/security/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/security/SKILL.md)
-- **Testing Skill**: [`.agents/skills/testing/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/testing/SKILL.md)
-- **Resilience Skill**: [`.agents/skills/resilience/SKILL.md`](file:///d:/Projects/Order%20&%20Commerce%20Management%20System/.agents/skills/resilience/SKILL.md)
-- **Architecture Skill**: [`.agents/skills/architecture/SKILL.md`](.agents/skills/architecture/SKILL.md)
-- **Development Skill**: [`.agents/skills/development/SKILL.md`](.agents/skills/development/SKILL.md)
+- **Development, Resilience & Testing Skill**: [`.agents/skills/development/SKILL.md`](.agents/skills/development/SKILL.md)
 - **Security Skill**: [`.agents/skills/security/SKILL.md`](.agents/skills/security/SKILL.md)
-- **Testing Skill**: [`.agents/skills/testing/SKILL.md`](.agents/skills/testing/SKILL.md)
-- **Resilience Skill**: [`.agents/skills/resilience/SKILL.md`](.agents/skills/resilience/SKILL.md)
+- **GitHub Operations Skill**: [`.agents/skills/github-standards/SKILL.md`](.agents/skills/github-standards/SKILL.md)
+
