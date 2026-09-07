@@ -1,175 +1,48 @@
 ---
 name: security
-description: >-
-  Security hardening, deny-by-default authorization, identity resolution from security context,
-  prevention of mass-assignment and injection, actuator lockdown, and input ceiling controls.
+description: Mandatory security guardrails, deny-by-default authorization, context-derived identity, anti-mass assignment, query parameterization, and parser ceiling controls in this project.
+compatibility: Requires Java 21 LTS and Spring Security 6+
+metadata:
+  version: "1.1"
 ---
 
-# Security Skill — Spring Security & Vulnerability Defense
+# Security Playbook — Guardrails & Vulnerability Defense
 
-This skill outlines mandatory security protocols, authorization flows, and defensive coding rules for backend services in Spring Boot.
+## 1. Authentication & Endpoint Authorization (Rule 6.1, N15)
+* **Deny by Default:** Every endpoint is secured by default. The `SecurityFilterChain` must terminate with `.anyRequest().authenticated()`.
+* **Explicit Permit-Lists:** Public routes (`/actuator/health`, `/actuator/info`, `/auth/token`) must be individually permit-listed by name. Never use wildcards like `permitAll("/api/**")`.
+* **CSRF Policy:** Disabled **only** when APIs are strictly stateless and use token-in-header authentication (Bearer tokens). The moment cookie or session authentication is used, CSRF protection is mandatory for all mutating routes (`POST`, `PUT`, `DELETE`).
+* **FilterChain Ordering:** Multiple security filter chains must be explicitly scoped with `.securityMatcher()` and ordered using `@Order`.
 
----
+## 2. Identity & Access Control (Rule 6.2, N14)
+* **Context-Derived Identity:** The actor identity must come exclusively from `@AuthenticationPrincipal` or `SecurityContextHolder`, never from query parameters (e.g. `?customerId=42`) or request bodies.
+* **Service-Level Ownership Enforcement:** Pass the verified actor ID into domain commands. The repository query must filter by both resource ID and actor ID (`findByIdAndCustomerId(id, actor)`).
+* **Anti-Enumeration (404 over 403):** If a resource does not exist or belongs to another user, always return `404 Not Found`. Never return `403 Forbidden` for ID lookups, as it confirms the resource ID exists to an attacker.
 
-## 1. Authentication & Endpoint Authorization
+## 3. Data Integrity & Injection Defense (Rules 6.3, 6.4, N3)
+* **Anti-Mass Assignment (N3):** Never bind request bodies directly to JPA `@Entity` classes.
+  - Inbound HTTP payloads must bind to dedicated `<UseCase>Request` records.
+  - Request records act as strict allowlists: system-managed fields (`role`, `creditLimit`, `balance`, `emailVerified`, `id`, `createdAt`) must never appear on request DTOs.
+* **Query Parameterization:** Bind all query values using named parameters (`:param`) or JDBC placeholders (`?`). String concatenation in SQL, JPQL, or HQL is strictly prohibited.
+* **Identifier Allowlisting:** Dynamic sort columns and table names cannot be parameterized; they must be validated against a static allowlist (`Set<String>`) before query construction.
 
-### Rule 6.1: Every Endpoint is Denied by Default (`MUST`, `N15`)
-A permit-list you forget to update fails closed; a deny-list you forget to update fails open.
-- The `SecurityFilterChain` **must** terminate with `.anyRequest().authenticated()`.
-- Public routes (`/actuator/health`, `/auth/token`) must be explicitly permit-listed by name.
-- Multiple filter chains must be explicitly prioritized using `@Order` and scoped with `.securityMatcher()`.
+## 4. Attack Surface Lockdown (Rule 6.5)
+* **Actuator Protection:** Expose only `health` and `info` publicly. Sensitive endpoints (`heapdump`, `env`, `beans`, `threaddump`) must reside on a separate internal management port (`management.server.port`) behind authentication. Never configure `management.endpoints.web.exposure.include="*"`.
+* **Information Leakage:** Configure `server.error.include-stacktrace=never` and `server.error.include-message=never`. Error responses must return a stable `ErrorCode` and correlation `traceId` (Rule 3.2), never internal class names or database traces.
+* **CORS Restrictions:** Configure explicit allowed origins. Never combine `allowedOrigins("*")` with `allowCredentials(true)`.
+* **OpenAPI / Swagger:** Disable in production environments (`springdoc.swagger-ui.enabled=false`) or restrict access to the private management port.
+* **Security Headers:** Enforce HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and strict CSP.
 
-```java
-// GOOD: Explicit permit-list, strict deny-by-default
-@Bean
-@Order(1)
-public SecurityFilterChain apiSecurityFilterChain(HttpSecurity http) throws Exception {
-    return http
-        .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-            .requestMatchers(HttpMethod.POST, "/api/auth/token").permitAll()
-            .anyRequest().authenticated() // DENY ALL OTHER BY DEFAULT
-        )
-        .oauth2ResourceServer(oauth -> oauth.jwt(Customizer.withDefaults()))
-        .sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-        .csrf(csrf -> csrf.disable()) // Safe ONLY because authentication is purely token-in-header (Stateless)
-        .build();
-}
-```
+## 5. Input Ceilings & Parser Constraints (Rule 6.6)
+* **No Polymorphic Deserialization:** Never enable Jackson default typing (`ObjectMapper.enableDefaultTyping()`). If subtype polymorphism is necessary, use explicit `@JsonSubTypes` declarations on a closed type hierarchy.
+* **Payload Ceilings:** Strictly enforce request body and multipart upload limits:
+  - `spring.servlet.multipart.max-file-size=5MB`
+  - `spring.servlet.multipart.max-request-size=10MB`
+* **Parser Constraints:** Limit JSON document nesting depth and max string length using Jackson's `StreamReadConstraints`.
+* **Strict Deserialization:** Configure `spring.jackson.deserialization.fail-on-unknown-properties=true` so unexpected payload fields trigger an immediate `400 Bad Request`.
+* **Collection Size Validation:** Enforce size bounds on all incoming list fields using Bean Validation: `@Size(min = 1, max = 50) List<OrderItemRequest> items`.
 
-> **CSRF Condition**: Disabling CSRF is permitted **only** when APIs are strictly stateless and use token-in-header authentication (Bearer tokens). The moment session cookies are introduced, CSRF protection **must** be re-enabled for all state-changing routes (`POST`, `PUT`, `DELETE`).
-
----
-
-### Rule 6.2: Actor Identity Comes from Security Context, Never Request Payloads (`MUST`, `N14`)
-A `customerId` passed in a query parameter or JSON body is a claim made by an unverified caller.
-- **Identity Resolution**: Resolve the current user exclusively via `@AuthenticationPrincipal` in the controller.
-- **Service Ownership Check**: Pass the typed actor ID into domain commands. The repository query checks both the resource ID and actor ID simultaneously.
-- **Information Leakage**: Return `404 Not Found` (never `403 Forbidden`) when accessing another user's resource to prevent attackers from enumerating valid IDs.
-
-```java
-// BAD: Trusting the caller's query parameter
-@GetMapping("/api/orders/{id}")
-public OrderResponse getOrder(@RequestParam Long customerId, @PathVariable Long id) {
-    return orderService.findOrder(id, customerId); // VIOLATION: Attacker changes ?customerId=42 to 43
-}
-```
-
-```java
-// GOOD: Verified actor from SecurityContext, ownership enforced in query
-@GetMapping("/api/orders/{id}")
-public OrderResponse getOrder(
-        @AuthenticationPrincipal CustomerPrincipal actor,
-        @PathVariable OrderId id) {
-    OrderResult result = orderQueryService.findForCustomer(actor.customerId(), id);
-    return OrderResponse.from(result);
-}
-
-// In internal/OrderQueryService.java:
-public OrderResult findForCustomer(CustomerId customerId, OrderId id) {
-    return orderRepository.findByIdAndCustomerId(id, customerId)
-        .orElseThrow(() -> new BusinessException(ErrorCode.ORDER_NOT_FOUND, "Order not found: " + id)); // Returns 404
-}
-```
-
----
-
-## 2. Preventing Data Tampering & Injection
-
-### Rule 6.3: Never Bind Request Bodies to `@Entity` (Mass Assignment) (`MUST`, `N3`)
-Jackson will populate any entity field present in the JSON payload, and Hibernate will persist it.
-- Never accept an entity class as a `@RequestBody` parameter.
-- Request DTO records act as **strict allowlists**: only fields declared on the DTO can be modified.
-- Never include sensitive system-managed fields (e.g. `role`, `id`, `balance`, `creditLimit`, `emailVerified`) in client request DTOs.
-
-```java
-// BAD: Direct entity binding enables privilege escalation
-@PutMapping("/api/customers/{id}")
-public void updateCustomer(@PathVariable Long id, @RequestBody Customer customer) {
-    // If payload contains {"role": "ADMIN", "creditLimit": 1000000}, Hibernate saves them!
-    customerRepository.save(customer); 
-}
-```
-
-```java
-// GOOD: Dedicated request record allows only editable fields
-public record UpdateCustomerProfileRequest(
-    @NotBlank @Size(max = 100) String fullName,
-    @Email String contactEmail
-) {} // 'role' is impossible to bind
-
-@PutMapping("/api/customers/{id}")
-public void updateCustomer(
-        @AuthenticationPrincipal CustomerPrincipal actor,
-        @PathVariable CustomerId id,
-        @Valid @RequestBody UpdateCustomerProfileRequest request) {
-    customerService.updateProfile(request.toCommand(actor.customerId(), id));
-}
-```
-
----
-
-### Rule 6.4: Parameterize All Queries; Allowlist Identifiers (`MUST`)
-- Bind all values using `@Param` or JDBC placeholders (`?`). Never concatenate raw strings into JPQL, HQL, or SQL.
-- For dynamic parameters that cannot be bound via SQL placeholders (such as sort column names or sort directions), use a strict static allowlist (`Set<String>`).
-
-```java
-// BAD: SQL/JPQL Injection
-@Query("SELECT o FROM Order o WHERE o.reference = '" + ref + "'") // VIOLATION
-List<Order> findByRef(String ref);
-```
-
-```java
-// GOOD: Parameterized value and allowlisted identifier
-@Query("SELECT o FROM Order o WHERE o.reference = :ref")
-List<Order> findByRef(@Param("ref") String ref);
-
-private static final Set<String> ALLOWED_SORTS = Set.of("placedAt", "totalPrice");
-if (!ALLOWED_SORTS.contains(sortField)) {
-    throw new BusinessException(ErrorCode.INVALID_SORT_FIELD, "Unauthorized sort column: " + sortField);
-}
-```
-
----
-
-## 3. Surface Lockdown & Resource Ceilings
-
-### Rule 6.5: Close Accidental Doors (`MUST`)
-
-| Surface | Hardening Requirement |
-|---|---|
-| **Actuator** | Expose only `health` and `info` publicly. Move sensitive endpoints (`heapdump`, `env`, `beans`) to a separate management port (`management.server.port=8081`) blocked from public routing. Never configure `endpoints.web.exposure.include="*"`. |
-| **Stack Traces** | Configure `server.error.include-stacktrace=never` and `server.error.include-message=never`. Internal class names and framework versions must not leak. |
-| **CORS** | Define explicit allowed origins. Never use `allowedOrigins("*")` alongside `allowCredentials(true)`. |
-| **OpenAPI / Swagger** | Disable in production (`springdoc.swagger-ui.enabled=false`) or place behind management authentication. |
-| **Security Headers** | Enforce HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and strict CSP. |
-
----
-
-### Rule 6.6: Input Ceilings & Parser Constraints (`MUST`)
-Unbounded inputs result in memory exhaustion (Denial of Service) or remote code execution.
-1. **Never Enable Polymorphic Deserialization**: Do not use `ObjectMapper.enableDefaultTyping()`. If polymorphism is strictly required, use an explicit `@JsonSubTypes` annotation on an enum/sealed hierarchy you control.
-2. **Cap Body & File Uploads**:
-   ```properties
-   spring.servlet.multipart.max-file-size=5MB
-   spring.servlet.multipart.max-request-size=10MB
-   ```
-3. **Cap Document Depth**: Use Jackson's `StreamReadConstraints` to set maximum nesting depth (e.g. 100 levels) and max string length (e.g. 5,000,000 characters).
-4. **Reject Unknown Properties**: Configure `spring.jackson.deserialization.fail-on-unknown-properties=true` so unexpected fields trigger immediate `400 Bad Request`.
-5. **Validate Collection Bounds**: Use Bean Validation on all list fields: `@Size(min = 1, max = 50) List<OrderItemRequest> items`.
-
----
-
-## 4. Supply Chain & Data Privacy
-
-### Rule 6.7: Dependency Security (`SHOULD`)
-- Use automated dependency scanners (Dependabot or Renovate) to keep dependencies patched weekly.
-- Upgrade the Spring Boot parent BOM (`spring-boot-starter-parent`) rather than overriding individual transitive libraries.
-- Run CVE scans (OWASP Dependency-Check or Snyk) in the CI pipeline; fail the build on `HIGH` or `CRITICAL` findings.
-
----
-
-### Rule 6.8: Personal Data (PII) is Radioactive (`SHOULD`)
-- **Never Log PII**: Strip email addresses, phone numbers, customer names, passwords, and tokens from logs, trace spans, and metric labels.
-- **Separate External and Internal IDs**: Internal database primary keys should use sequential `BIGINT` or time-ordered UUIDv7/ULID; external IDs presented to users should be opaque tokens to prevent enumeration attacks.
-
+## 6. Secrets & Supply Chain Hygiene (Rules 6.7, 6.8, 8.2, N12)
+* **Zero Secrets in Git:** Never commit API keys, private keys, passwords, or tokens. Configuration must be grouped in `@ConfigurationProperties` with values injected via deploy-time environment variables.
+* **Supply Chain Scanning:** Run automated dependency updates (Dependabot/Renovate) weekly. Build pipelines must fail on `HIGH` or `CRITICAL` CVEs. Upgrade managed Spring Boot parent BOMs rather than pinning individual libraries.
+* **PII Redaction:** Personal identifiable information (email, phone, real names, passwords, tokens) must never appear in application logs, MDC attributes, trace spans, or metric labels.
