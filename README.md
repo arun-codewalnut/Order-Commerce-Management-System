@@ -1,4 +1,4 @@
-# bad-commerce-api
+# commerce-api
 
 Order & Commerce Management System backend service.
 
@@ -8,7 +8,7 @@ Order & Commerce Management System backend service.
 
 ## 1. Overview
 
-`bad-commerce-api` is a monolithic Spring Boot backend service for managing e-commerce operations. It provides core functionality across:
+`commerce-api` is a monolithic Spring Boot backend service for managing e-commerce operations. It provides core functionality across:
 
 - **Customers**: Customer profile management and registration
 - **Products**: Catalog management, product lookup, category browsing, and search
@@ -34,7 +34,7 @@ Order & Commerce Management System backend service.
 
 The application connects to a PostgreSQL database. By default, connection parameters are:
 
-- **URL**: `jdbc:postgresql://localhost:5432/bad_commerce`
+- **URL**: `jdbc:postgresql://localhost:5432/commerce`
 - **Username**: `postgres`
 - **Password**: `postgres`
 
@@ -43,11 +43,29 @@ These can be overridden using environment variables:
 - `DB_USERNAME`
 - `DB_PASSWORD`
 
-Schema management is handled via JPA auto-update (`spring.jpa.hibernate.ddl-auto=update`).
+Schema management is handled by forward-only Flyway migrations. Hibernate validates the schema at startup (`spring.jpa.hibernate.ddl-auto=validate`) and Open Session in View is disabled.
+
+## 4. Project Structure
+
+Business code is organized by capability rather than technical layer:
+
+```text
+com.example.commerce
+├── customer/{api,web,internal}
+├── catalog/{api,web,internal}
+├── inventory/{api,web,internal}
+├── order/{api,web,internal}
+├── payment/{api,web,internal}
+├── notification/{api,web,internal}
+├── shared/{support,web}
+└── bootstrap/
+```
+
+`api` contains published contracts, `web` contains HTTP adapters, and `internal` contains private domain and persistence code. JPA entities never leave `internal`.
 
 ---
 
-## 4. Running the Application
+## 5. Running the Application
 
 ### Option A: Using Docker Compose (Recommended)
 
@@ -63,7 +81,7 @@ The service will be accessible at `http://localhost:8080`.
 
 1. Start PostgreSQL locally (e.g. via Docker):
    ```bash
-   docker run --name bad-commerce-postgres -e POSTGRES_DB=bad_commerce -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16-alpine
+   docker run --name commerce-postgres -e POSTGRES_DB=commerce -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16-alpine
    ```
 
 2. Compile and run the Spring Boot application:
@@ -81,7 +99,7 @@ mvn clean test
 
 ---
 
-## 5. API Documentation & Endpoints
+## 6. API Documentation & Endpoints
 
 Once the application is running, interactive API documentation is available at:
 - **Swagger UI**: `http://localhost:8080/swagger-ui.html`
@@ -116,7 +134,7 @@ Once the application is running, interactive API documentation is available at:
 
 ---
 
-## 6. Authentication
+## 7. Authentication
 
 The application uses HTTP Basic Authentication with default seed credentials:
 
@@ -125,7 +143,7 @@ The application uses HTTP Basic Authentication with default seed credentials:
 
 ---
 
-## 7. Sample API Requests
+## 8. Sample API Requests
 
 ### 1. Retrieve All Products
 ```bash
@@ -169,4 +187,3 @@ curl -X POST http://localhost:8080/api/payments \
     "paymentMethod": "CREDIT_CARD"
   }'
 ```
-

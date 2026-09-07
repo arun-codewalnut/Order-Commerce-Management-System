@@ -3,9 +3,9 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: bad-commerce-postgres
+    container_name: commerce-postgres
     environment:
-      POSTGRES_DB: bad_commerce
+      POSTGRES_DB: commerce
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
@@ -13,28 +13,27 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d bad_commerce"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d commerce"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  bad-commerce-api:
+  commerce-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: bad-commerce-api
+    container_name: commerce-api
     ports:
       - "8080:8080"
     environment:
-      DB_URL: jdbc:postgresql://postgres:5432/bad_commerce
+      DB_URL: jdbc:postgresql://postgres:5432/commerce
       DB_USERNAME: postgres
       DB_PASSWORD: postgres
-      EXTERNAL_PAYMENT_URL: http://bad-commerce-api:8080/mock-payment
-      EXTERNAL_NOTIFICATION_URL: http://bad-commerce-api:8080/mock-notification
+      EXTERNAL_PAYMENT_URL: http://commerce-api:8080/mock-payment
+      EXTERNAL_NOTIFICATION_URL: http://commerce-api:8080/mock-notification
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
   postgres_data:
-
